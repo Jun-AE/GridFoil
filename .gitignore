@@ -1,0 +1,13 @@
+/.venv/
+/.validation-venv/
+/.vendor/
+/.cgns-validator/
+/.pytest_cache/
+/.ruff_cache/
+/.cleanup-backup/
+/build/
+/dist/
+/manual_inspection/
+*.egg-info/
+__pycache__/
+*.py[cod]

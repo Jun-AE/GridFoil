@@ -1,0 +1,16 @@
+include LICENSE README.md
+recursive-include examples *.py *.dat *.msh *.su2 *.cgns *.vtu *.png
+exclude examples/naca0012/mesh_midchord_lower_25cells.png
+exclude examples/naca0012/mesh_midchord_upper_25cells.png
+prune .github
+prune docs
+prune tests
+prune build
+prune dist
+prune manual_inspection
+prune .venv
+prune .vendor
+prune .cgns-validator
+prune .pytest_cache
+prune .ruff_cache
+global-exclude __pycache__ *.py[cod]

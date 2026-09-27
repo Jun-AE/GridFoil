@@ -1,0 +1,8 @@
+*.cgns binary
+*.png binary
+*.zip binary
+# Preserve the exact bytes and validation hash of the supplied Fluent mesh.
+*.msh -text
+.github export-ignore
+docs export-ignore
+tests export-ignore
