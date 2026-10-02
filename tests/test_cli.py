@@ -29,7 +29,7 @@ def test_cli_generates_su2_mesh(tmp_path: Path, capsys) -> None:
 
 
 def test_cli_accepts_surface_spacing_controls(tmp_path: Path, capsys) -> None:
-    airfoil = Path("examples/naca4412i.dat")
+    airfoil = Path("examples/naca4412/naca4412.dat")
 
     exit_code = main(
         [

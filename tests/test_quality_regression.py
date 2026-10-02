@@ -42,7 +42,7 @@ def test_sharp_trailing_edge_march_avoids_algebraic_fallback() -> None:
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        mesh = GridGenerator(Path("examples/naca4412i.dat"), settings).run()
+        mesh = GridGenerator(Path("examples/naca4412/naca4412.dat"), settings).run()
 
     assert mesh.geometry_diagnostics is not None
     assert mesh.geometry_diagnostics["trailing_edge_kind"] == "SHARP"

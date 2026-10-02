@@ -123,20 +123,31 @@ gridfoil examples/naca0012/naca0012.dat --output mesh/naca0012 --optimize --su2 
 `python -m gridfoil` provides the same interface. Run `gridfoil --help` to see
 the available mesh controls and output options.
 
-## Included example
+## Included examples
 
-The complete NACA0012 example generates an optimized 210 × 210-node mesh and
-writes SU2, CGNS, Fluent MSH, and VTU files. The images above show this example.
+Two complete examples generate an optimized 210 × 210-node mesh and write SU2,
+CGNS, Fluent MSH, and VTU files. The images above show the blunt (NACA0012)
+example.
 
 Grid sizes always use `circumferential × wall-normal`, so here
 `m × n = 210 × 210`, giving `(m - 1)(n - 1) = 209 × 209 = 43,681`
 quadrilateral cells.
 
+Blunt trailing edge (NACA0012):
+
 ```sh
-python examples/examples.py
+python examples/example_naca0012_blunt_TE.py
 ```
 
 Generated files are written to `examples/naca0012/`.
+
+Sharp trailing edge (NACA4412):
+
+```sh
+python examples/example_naca4412_sharp_TE.py
+```
+
+Generated files are written to `examples/naca4412/`.
 
 ## Input and output
 

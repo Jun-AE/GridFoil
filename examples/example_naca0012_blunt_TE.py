@@ -1,4 +1,4 @@
-"""Generate the optimized NACA0012 example mesh."""
+"""Generate the optimized NACA0012 blunt-trailing-edge example mesh."""
 
 from pathlib import Path
 
