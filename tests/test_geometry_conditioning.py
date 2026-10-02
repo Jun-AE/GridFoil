@@ -10,6 +10,7 @@ from gridfoil.geometry import (
     prepare_surface,
     prepare_surface_with_diagnostics,
     transform_airfoil,
+    wall_corner_indices,
 )
 from gridfoil.models import MeshSettings
 
@@ -113,6 +114,16 @@ def test_conditioning_modes_preserve_blunt_te_endpoints() -> None:
         assert np.array_equal(surface[upper], expected[0])
         assert np.array_equal(surface[lower], expected[-1])
         assert diagnostics["trailing_edge_kind"] == "BLUNT"
+
+
+def test_wall_corner_indices_flags_only_sharp_turns() -> None:
+    square = np.array(((1.0, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)))
+    assert wall_corner_indices(square) == (0, 1, 2, 3)
+
+    angles = np.linspace(0.0, 2.0 * np.pi, 33)
+    circle = np.column_stack((np.cos(angles), np.sin(angles)))
+    circle[-1] = circle[0]
+    assert wall_corner_indices(circle) == ()
 
 
 def test_duplicate_point_is_retained_as_conditioning_break_metadata() -> None:
