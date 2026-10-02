@@ -116,6 +116,23 @@ See README.md for import steps, mesh counts, and quality metrics.
         help="farfield radius in chord lengths (source default: 50)",
     )
     result.add_argument(
+        "--leading-edge-cell-length",
+        type=float,
+        help=(
+            "first wall panel length at both leading-edge corners in chord "
+            "units (source default: 1.130001e-3)"
+        ),
+    )
+    result.add_argument(
+        "--trailing-edge-cell-length",
+        type=float,
+        help=(
+            "first wall panel length at both trailing-edge corners in chord "
+            "units; smaller values add more cells at the trailing edge "
+            "(source default: 5.075471e-4)"
+        ),
+    )
+    result.add_argument(
         "--flow-reynolds-number",
         type=float,
         default=9.0e6,
@@ -169,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
             "circumferential_node_count": args.circumferential_node_count,
             "wall_normal_node_count": args.wall_normal_node_count,
             "farfield_radius_chords": args.farfield_radius_chords,
+            "leading_edge_cell_length": args.leading_edge_cell_length,
+            "trailing_edge_cell_length": args.trailing_edge_cell_length,
             "hyperbolic_max_pseudo_aspect_ratio": (
                 args.hyperbolic_max_pseudo_aspect_ratio
             ),
