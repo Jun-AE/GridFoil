@@ -994,6 +994,36 @@ def surface_normals(points: np.ndarray) -> np.ndarray:
     return np.column_stack((tangent[:, 1], -tangent[:, 0])) / magnitude[:, None]
 
 
+def wall_corner_indices(
+    surface: np.ndarray, threshold_degrees: float = 45.0
+) -> tuple[int, ...]:
+    """Return wall nodes whose tangent turns more sharply than the threshold.
+
+    The periodic surface normal is undefined at a tangent discontinuity such as
+    a trailing edge, so these nodes must be constrained to their edge bisector
+    during the march instead of using a centered normal.
+    """
+    unique = np.asarray(surface, dtype=float)[:-1]
+    if len(unique) < 3:
+        return ()
+    incoming = unique - np.roll(unique, 1, axis=0)
+    outgoing = np.roll(unique, -1, axis=0) - unique
+    incoming_length = np.linalg.norm(incoming, axis=1)
+    outgoing_length = np.linalg.norm(outgoing, axis=1)
+    valid = (incoming_length > 1.0e-14) & (outgoing_length > 1.0e-14)
+    cosine = np.ones(len(unique))
+    np.divide(
+        np.sum(incoming * outgoing, axis=1),
+        incoming_length * outgoing_length,
+        out=cosine,
+        where=valid,
+    )
+    turn = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+    return tuple(
+        int(index) for index in np.flatnonzero(valid & (turn > threshold_degrees))
+    )
+
+
 def create_farfield(inner: np.ndarray, options: MeshSettings) -> np.ndarray:
     """Project a marched boundary onto a circle without index-based rotation."""
     center = np.array((0.5, 0.0))

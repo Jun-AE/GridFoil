@@ -8,7 +8,12 @@ from pathlib import Path
 import numpy as np
 
 from .exporters import write_fluent_msh, write_su2
-from .geometry import fit_farfield, prepare_surface_with_diagnostics, wall_distance
+from .geometry import (
+    fit_farfield,
+    prepare_surface_with_diagnostics,
+    wall_corner_indices,
+    wall_distance,
+)
 from .models import (
     AirfoilMesh,
     AirfoilProfile,
@@ -57,15 +62,16 @@ class GridGenerator:
             self.airfoil, self.settings
         )
         self.geometry_diagnostics = diagnostics
+        corner_indices = set(wall_corner_indices(wall))
+        if self.airfoil.has_trailing_edge_gap:
+            corner_indices.update(corners)
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 nodes = march_hyperbolic(
                     wall,
                     self.settings,
-                    corner_indices=corners
-                    if self.airfoil.has_trailing_edge_gap
-                    else (),
+                    corner_indices=tuple(sorted(corner_indices)),
                 )
             for warning in caught:
                 warnings.warn(warning.message, warning.category, stacklevel=2)

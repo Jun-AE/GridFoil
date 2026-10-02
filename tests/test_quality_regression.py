@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,22 @@ def test_optimized_naca0012_matches_or_improves_pushed_quality() -> None:
     assert quality["minimum_dual_orthogonality_degrees"] >= 70.1755494341
     assert quality["maximum_neighbor_area_ratio"] <= 1.6265792004
     assert quality["maximum_edge_aspect_ratio"] <= 1408.4207583
+
+
+def test_sharp_trailing_edge_march_avoids_algebraic_fallback() -> None:
+    settings = MeshSettings(
+        circumferential_node_count=151,
+        wall_normal_node_count=251,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        mesh = GridGenerator(Path("examples/naca4412i.dat"), settings).run()
+
+    assert mesh.geometry_diagnostics is not None
+    assert mesh.geometry_diagnostics["trailing_edge_kind"] == "SHARP"
+    assert not any("fallback" in str(item.message).lower() for item in caught)
+    assert mesh.quality.compact_summary()["invalid_cell_count"] == 0
 
 
 def test_naca0012_stabilized_march_does_not_bend_outward() -> None:
