@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gridfoil import generate_optimized_mesh
+from gridfoil import MeshSettings, generate_optimized_mesh
+from gridfoil.optimization import _bounds
 
 
 def test_optimizer_keeps_geometry_policy_controls_fixed() -> None:
@@ -25,3 +26,31 @@ def test_optimizer_keeps_geometry_policy_controls_fixed() -> None:
     }
     assert expected <= set(result.inactive_controls)
     assert expected.isdisjoint(result.free_controls)
+
+
+def test_optimizer_bounds_scale_with_resolution() -> None:
+    coarse = _bounds(MeshSettings(circumferential_node_count=101))
+    fine = _bounds(MeshSettings(circumferential_node_count=401))
+
+    assert fine["leading_edge_cell_length"][1] < coarse["leading_edge_cell_length"][1]
+    assert fine["trailing_edge_cell_length"][0] < coarse["trailing_edge_cell_length"][0]
+
+
+def test_optimizer_is_deterministic_and_keeps_baseline_safe() -> None:
+    kwargs = dict(
+        optimize=True,
+        optimization_budget=8,
+        circumferential_node_count=101,
+        wall_normal_node_count=41,
+    )
+    airfoil = Path("examples/naca0012/naca0012.dat")
+
+    first = generate_optimized_mesh(airfoil, **kwargs)
+    second = generate_optimized_mesh(airfoil, **kwargs)
+
+    assert vars(first.settings) == vars(second.settings)
+    assert first.selected_valid
+    assert (
+        first.selected_metrics["objective_total"]
+        <= first.baseline_metrics["objective_total"] + 1.0e-9
+    )

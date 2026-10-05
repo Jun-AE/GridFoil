@@ -12,7 +12,7 @@ def main() -> None:
     result = generate_optimized_mesh(
         airfoil,
         optimize=True,
-        optimization_budget=8,
+        optimization_budget=16,
         circumferential_node_count=210,
         wall_normal_node_count=210,
         farfield_radius_chords=50.0,

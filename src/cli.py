@@ -73,8 +73,8 @@ See README.md for import steps, mesh counts, and quality metrics.
     result.add_argument(
         "--optimization-budget",
         type=int,
-        default=8,
-        help="maximum optimizer evaluations (default: 8)",
+        default=16,
+        help="maximum optimizer evaluations (default: 16)",
     )
     result.add_argument(
         "--su2",

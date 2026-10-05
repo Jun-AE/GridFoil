@@ -45,9 +45,13 @@ GridFoil pipeline is as follows.
 4. Apply wall-normal spacing and fit the circular outer boundary.
 5. Evaluate mesh quality and write the requested output formats.
 
-The optional optimizer evaluates a small number of mesh-setting variations using
-defaults calibrated across a broad range of airfoil geometries. Users can override
-the controls when a particular geometry or flow condition needs different spacing.
+The optional optimizer searches the omitted mesh controls for each airfoil. It is
+warm-started from the requested mesh and the previously learned control values,
+screens the controls for sensitivity, then runs a Gaussian-process Bayesian search
+with expected improvement over a per-instance trust region, selecting a candidate
+only when it is valid and Pareto-safe against the requested baseline. Users can
+override the controls when a particular geometry or flow condition needs different
+spacing.
 
 ## Installation
 

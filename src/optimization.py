@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import numpy as np
+from skopt import gp_minimize
+from skopt.space import Real
 
 from .generator import GridGenerator
 from .generator import generate_mesh as source_generate_mesh
@@ -53,19 +55,33 @@ INVALID_COUNTS = (
     "undefined_dual_node_count",
 )
 
-# Bounds from the feasible-airfoil campaign.
-LEARNED_BOUNDS = {
-    "leading_edge_cell_length": (2.0e-4, 3.601e-3, "spacing"),
-    "trailing_edge_cell_length": (2.0e-4, 5.772e-3, "spacing"),
-    "trailing_edge_face_cell_count": (16, 32, "int"),
-    "farfield_angular_bias": (0.7, 1.443, "log"),
-    "hyperbolic_normal_coupling": (2.135, 7.595, "linear"),
-    "hyperbolic_implicit_smoothing": (17.407, 57.883, "linear"),
-    "hyperbolic_explicit_smoothing": (0.0, 1.426, "linear"),
-    "farfield_uniformity_weight": (0.021, 0.369, "linear"),
-    "hyperbolic_area_smoothing_passes": (17, 86, "int"),
+# Merit assigned to an invalid or fallback candidate so the surrogate avoids it.
+INVALID_PENALTY = 10.0
+# Fixed sensitivity-screen size so the design is nested as the budget grows.
+SCREEN_POINTS = 6
+# Screen step in encoded units; large enough to expose the useful directions.
+SCREEN_TRUST = 0.18
+# Number of most-influential controls given axis-aligned probes.
+PROBE_LIMIT = 3
+# Largest number of controls handed to the model search.
+FOCUS_LIMIT = 6
+# Model-search trust box around the requested mesh in encoded units.
+TRUST_RADIUS = 0.35
+# Deterministic response-surface seed.
+OPTIMIZER_SEED = 0
+# Previously learned control values, used only as an extra warm-start candidate.
+PRIOR_CONTROLS = {
+    "leading_edge_cell_length": 0.0020841394958560056,
+    "trailing_edge_cell_length": 0.0002490216626885873,
+    "trailing_edge_face_cell_count": 16,
+    "farfield_angular_bias": 1.1390696813749193,
+    "hyperbolic_normal_coupling": 5.2028,
+    "hyperbolic_implicit_smoothing": 28.314320000000002,
+    "hyperbolic_explicit_smoothing": 0.4333199999999999,
+    "farfield_uniformity_weight": 0.20264,
+    "hyperbolic_area_smoothing_passes": 58,
+    "hyperbolic_max_pseudo_aspect_ratio": 7.1,
 }
-LEARNED_MEDIANS = {name: getattr(MeshSettings(), name) for name in LEARNED_BOUNDS}
 
 
 @dataclass(frozen=True)
@@ -146,13 +162,26 @@ def _inactive(
     return inactive
 
 
-def _bounds(settings: MeshSettings) -> dict[str, tuple[float, float, str]]:
+def _bounds(
+    settings: MeshSettings, profile: AirfoilProfile | None = None
+) -> dict[str, tuple[float, float, str]]:
+    """Derive per-instance search bounds from the requested settings.
+
+    Every range is anchored to the resolved caller settings, so the search is
+    tailored to the requested airfoil, resolution, and flow instead of a fixed
+    cross-airfoil box.
+    """
     values = asdict(settings)
+    count = settings.circumferential_node_count
+    panel = 2.0 / max(count, 1)
+    blunt = profile is not None and profile.has_trailing_edge_gap
     bounds: dict[str, tuple[float, float, str]] = {}
     for name in SETTING_NAMES:
         value = values[name]
-        if name in LEARNED_BOUNDS:
-            bounds[name] = LEARNED_BOUNDS[name]
+        if name in NON_OPTIMIZABLE:
+            bounds[name] = (0.0, 1.0, "fixed")
+        elif name == "surface_point_mode":
+            bounds[name] = (0.0, 1.0, "mode")
         elif name == "circumferential_node_count":
             bounds[name] = (
                 max(20, round(value * 0.8)),
@@ -167,10 +196,31 @@ def _bounds(settings: MeshSettings) -> dict[str, tuple[float, float, str]]:
             )
         elif name == "farfield_radius_chords":
             bounds[name] = (max(20.0, value * 0.75), max(20.0, value * 1.25), "linear")
-        elif name == "surface_point_mode":
-            bounds[name] = (0.0, 1.0, "mode")
-        elif name in NON_OPTIMIZABLE:
-            bounds[name] = (0.0, 1.0, "fixed")
+        elif name in SPACING:
+            bounds[name] = (0.02 * panel, 0.8 * panel, "spacing")
+        elif name == "trailing_edge_face_cell_count":
+            low = max(2, round(0.03 * count))
+            high = max(low + 2, round(0.2 * count))
+            if blunt:
+                low = max(low, 16)
+                high = max(high, low)
+            bounds[name] = (low, high, "int")
+        elif name == "farfield_angular_bias":
+            bounds[name] = (0.5, 1.5, "log")
+        elif name == "hyperbolic_normal_coupling":
+            bounds[name] = (0.5 * value, 2.0 * value, "linear")
+        elif name == "hyperbolic_implicit_smoothing":
+            bounds[name] = (0.5 * value, 1.8 * value, "linear")
+        elif name == "hyperbolic_explicit_smoothing":
+            bounds[name] = (0.0, max(2.0 * value, 1.0e-6), "linear")
+        elif name == "farfield_uniformity_weight":
+            bounds[name] = (max(0.0, 0.1 * value), min(1.0, 2.5 * value), "linear")
+        elif name == "hyperbolic_area_smoothing_passes":
+            bounds[name] = (
+                max(0, round(0.4 * value)),
+                max(1, round(2.0 * value)),
+                "int",
+            )
         elif name == "hyperbolic_max_pseudo_aspect_ratio":
             bounds[name] = (5.0, 10.0, "linear")
         elif name in LOGARITHMIC:
@@ -346,7 +396,7 @@ def _optimize_existing_mesh(
     settings: MeshSettings,
     explicit_controls: tuple[str, ...],
     *,
-    budget: int = 8,
+    budget: int = 16,
     minimum_skew_improvement_degrees: float = 0.05,
     minimum_orthogonality_improvement_degrees: float = 0.05,
     minimum_area_ratio_improvement_fraction: float = 0.005,
@@ -370,47 +420,21 @@ def _optimize_existing_mesh(
             0.0,
         )
 
-    bounds = _bounds(settings)
+    bounds = _bounds(settings, profile)
     x0 = _encode(settings, bounds)
     free_indices = np.asarray([SETTING_NAMES.index(name) for name in free], dtype=int)
-    trust = 0.18
-    learned = asdict(settings)
-    learned.update(
-        {name: value for name, value in LEARNED_MEDIANS.items() if name in free}
-    )
-    learned_genes = _encode(MeshSettings(**learned).validated(profile), bounds)
-    use_learned_seed = not np.allclose(learned_genes, x0, rtol=0.0, atol=1.0e-12)
-    # Save room for the learned seed and local search.
-    screen_count = min(max(budget - 2 - int(use_learned_seed), 0), 6)
-    order = 1
-    while order < max(screen_count + 1, len(free) + 1):
-        order *= 2
-    design = _hadamard(order)[1 : screen_count + 1, 1 : len(free) + 1]
-    proposals: list[tuple[np.ndarray, str]] = []
-    if use_learned_seed:
-        proposals.append((learned_genes, "learned_median"))
-    for row in design:
-        genes = x0.copy()
-        genes[free_indices] = np.clip(genes[free_indices] + trust * row, 0.0, 1.0)
-        for position, name in enumerate(free):
-            if name == "surface_point_mode":
-                genes[free_indices[position]] = 1.0 if row[position] > 0 else 0.0
-            elif (
-                name in SPACING
-                and x0[free_indices[position]] == 0
-                and row[position] > 0
-            ):
-                genes[free_indices[position]] = 0.35
-        proposals.append((genes, "screen"))
+    x0_free = x0[free_indices].copy()
+    n_free = len(free)
 
     trials: list[MeshOptimizationTrial] = []
-    evaluated: set[tuple[object, ...]] = set()
-    model_x: list[np.ndarray] = []
-    model_y: list[float] = []
+    cache: dict[tuple[object, ...], float] = {}
     feasible_candidates: list[tuple[float, AirfoilMesh, MeshSettings, dict]] = []
     start = time.perf_counter()
 
-    def evaluate(genes, kind):
+    def evaluate(genes, kind) -> float:
+        if len(trials) >= budget:
+            return INVALID_PENALTY
+        key: tuple[object, ...] | None = None
         try:
             candidate = _decode(genes, settings, bounds, explicit)
             if any(
@@ -418,9 +442,8 @@ def _optimize_existing_mesh(
             ):
                 raise AssertionError("candidate changed an explicit control")
             key = tuple(asdict(candidate).values())
-            if key in evaluated:
-                return
-            evaluated.add(key)
+            if key in cache:
+                return cache[key]
             mesh, report, caught, seconds = _generate(profile, candidate)
             valid = _valid(report, caught)
             if TOPOLOGY_COUNTS <= explicit and not np.array_equal(
@@ -435,8 +458,11 @@ def _optimize_existing_mesh(
                 minimum_orthogonality_improvement_degrees,
                 minimum_area_ratio_improvement_fraction,
             )
-            objective = _record_objective(report, baseline_report)
-            merit = objective if valid else math.inf
+            if valid:
+                merit = _record_objective(report, baseline_report)
+            else:
+                report["objective_total"] = INVALID_PENALTY
+                merit = INVALID_PENALTY
             trials.append(
                 MeshOptimizationTrial(
                     len(trials) + 1,
@@ -450,11 +476,10 @@ def _optimize_existing_mesh(
                     seconds,
                 )
             )
-            if valid:
-                model_x.append((genes[free_indices] - x0[free_indices]) / trust)
-                model_y.append(merit - 1.0)
+            cache[key] = merit
             if material:
                 feasible_candidates.append((merit, mesh, candidate, report))
+            return merit
         except (
             ValueError,
             TypeError,
@@ -470,42 +495,122 @@ def _optimize_existing_mesh(
                     False,
                     False,
                     False,
-                    math.inf,
+                    INVALID_PENALTY,
                     {},
                     0.0,
                     f"{type(error).__name__}: {error}",
                 )
             )
+            if key is not None:
+                cache[key] = INVALID_PENALTY
+            return INVALID_PENALTY
 
-    for genes, kind in proposals:
-        if len(trials) >= budget:
-            break
-        evaluate(genes, kind)
+    pool_genes: list[np.ndarray] = []
+    pool_merit: list[float] = []
 
-    if model_x and len(trials) < budget:
-        gradient = np.linalg.lstsq(
-            np.asarray(model_x), np.asarray(model_y), rcond=None
-        )[0]
-        direction = -gradient / max(float(np.max(np.abs(gradient))), 1.0e-12)
-        for fraction in (0.5, 1.0):
-            genes = x0.copy()
-            genes[free_indices] = np.clip(
-                genes[free_indices] + fraction * trust * direction, 0.0, 1.0
-            )
-            evaluate(genes, "fitted_direction")
-            if len(trials) >= budget:
-                break
+    # Warm-start from the previously learned control values when they apply.
+    prior = asdict(settings)
+    prior.update(
+        {name: value for name, value in PRIOR_CONTROLS.items() if name in free}
+    )
+    prior_genes = _encode(MeshSettings(**prior).validated(profile), bounds)
+    if not np.allclose(prior_genes[free_indices], x0_free, rtol=0.0, atol=1.0e-12):
+        pool_genes.append(prior_genes[free_indices])
+        pool_merit.append(evaluate(prior_genes, "prior"))
+    prior_count = len(pool_genes)
 
-    # Fill any remaining slots with one-control polls.
-    for index in free_indices:
+    # Sensitivity screen: a fixed orthogonal design around the requested mesh.
+    screen_count = max(1, min(n_free, budget, SCREEN_POINTS))
+    order = 1
+    while order < max(screen_count + 1, n_free + 1):
+        order *= 2
+    design = _hadamard(order)[1 : screen_count + 1, 1 : n_free + 1]
+    for row in design:
+        free_genes = np.clip(x0_free + SCREEN_TRUST * row, 0.0, 1.0)
+        for position, name in enumerate(free):
+            if name == "surface_point_mode":
+                free_genes[position] = 1.0 if row[position] > 0 else 0.0
+            elif name in SPACING and x0_free[position] == 0.0 and row[position] > 0:
+                free_genes[position] = 0.35
+        genes = x0.copy()
+        genes[free_indices] = free_genes
+        pool_genes.append(free_genes)
+        pool_merit.append(evaluate(genes, "screen"))
+    screen_genes = pool_genes[prior_count:]
+    screen_merit = pool_merit[prior_count:]
+
+    # Rank controls by first-order impact on the penalty-augmented merit.
+    usable = np.asarray(
+        [np.isfinite(merit) and merit < INVALID_PENALTY for merit in screen_merit],
+        dtype=bool,
+    )
+    if np.count_nonzero(usable) >= 2:
+        delta = np.asarray(screen_genes)[usable] - x0_free
+        response = np.asarray(screen_merit)[usable]
+        model = np.column_stack((np.ones(len(delta)), delta))
+        coefficients = np.linalg.lstsq(model, response, rcond=None)[0][1:]
+        sensitivity = np.abs(coefficients)
+    else:
+        sensitivity = np.ones(n_free)
+    ranking = np.argsort(-sensitivity, kind="stable")
+
+    # Axis-aligned probes keep single-control improvements available to the model.
+    for position in ranking[: min(n_free, PROBE_LIMIT)]:
         for sign in (-1.0, 1.0):
             if len(trials) >= budget:
                 break
+            free_genes = x0_free.copy()
+            free_genes[position] = np.clip(
+                free_genes[position] + sign * SCREEN_TRUST, 0.0, 1.0
+            )
             genes = x0.copy()
-            genes[index] = np.clip(genes[index] + sign * trust, 0.0, 1.0)
-            evaluate(genes, "coordinate_fill")
-        if len(trials) >= budget:
-            break
+            genes[free_indices] = free_genes
+            pool_genes.append(free_genes)
+            pool_merit.append(evaluate(genes, "probe"))
+
+    # Model search over a fixed control set, so more budget only adds samples.
+    remaining = budget - len(trials)
+    if remaining >= 1:
+        focus = ranking[: min(n_free, FOCUS_LIMIT)]
+        low = np.clip(x0_free[focus] - TRUST_RADIUS, 0.0, 1.0)
+        high = np.clip(x0_free[focus] + TRUST_RADIUS, 0.0, 1.0)
+        dimensions = [
+            Real(float(lo), float(hi)) for lo, hi in zip(low, high, strict=True)
+        ]
+        warm_x: list[list[float]] = []
+        warm_y: list[float] = []
+        seen: set[tuple[float, ...]] = set()
+        for free_genes, merit in zip(pool_genes, pool_merit, strict=True):
+            if not (np.isfinite(merit) and merit < INVALID_PENALTY):
+                continue
+            point = tuple(
+                float(value) for value in np.clip(free_genes[focus], low, high)
+            )
+            if point in seen:
+                continue
+            seen.add(point)
+            warm_x.append(list(point))
+            warm_y.append(float(merit))
+
+        def objective(point) -> float:
+            genes = x0.copy()
+            genes[free_indices[focus]] = np.clip(
+                np.asarray(point, dtype=float), 0.0, 1.0
+            )
+            return evaluate(genes, "bo")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            gp_minimize(
+                objective,
+                dimensions,
+                n_calls=max(1, remaining),
+                x0=warm_x or None,
+                y0=warm_y or None,
+                n_initial_points=0 if warm_x else min(3, max(1, remaining)),
+                random_state=OPTIMIZER_SEED,
+                acq_func="EI",
+            )
 
     seconds = time.perf_counter() - start
     if feasible_candidates:
@@ -540,7 +645,7 @@ def generate_optimized_mesh(
     airfoil: AirfoilProfile | str | Path,
     *,
     optimize: bool = True,
-    optimization_budget: int = 8,
+    optimization_budget: int = 16,
     minimum_skew_improvement_degrees: float = 0.05,
     minimum_orthogonality_improvement_degrees: float = 0.05,
     minimum_area_ratio_improvement_fraction: float = 0.005,
